@@ -1,8 +1,6 @@
--- get_agent_and_team_counts on prod
-
 -- DROP FUNCTION public.get_agent_and_team_counts(text, date, date, _text, text, _varchar);
 
-CREATE OR REPLACE FUNCTION public.get_agent_and_team_counts(p_agent_id text, start_date date, end_date date, p_state_cd text[] DEFAULT NULL::text[], p_lead_type text DEFAULT 'all'::text, p_territory_ids character varying[] DEFAULT NULL::character varying[])
+CREATE OR REPLACE FUNCTION public.get_agent_and_team_counts(p_agent_id text, start_date date DEFAULT NULL::date, end_date date DEFAULT NULL::date, p_state_cd text[] DEFAULT NULL::text[], p_lead_type text DEFAULT 'all'::text, p_territory_ids character varying[] DEFAULT NULL::character varying[])
  RETURNS jsonb
  LANGUAGE plpgsql
 AS $function$
@@ -28,20 +26,28 @@ DECLARE
     team_counts_json jsonb;
 BEGIN
     
+    IF start_date IS NULL THEN
+        start_date := '1900-01-01'; -- Use an arbitrarily early date
+    END IF;
+
+    IF end_date IS NULL THEN
+        end_date := '9999-12-31'; -- Use an arbitrarily late date
+    END IF;
+
     IF p_lead_type IS NOT NULL THEN
         p_lead_type := lower(p_lead_type::TEXT);
     END IF;
 
-    IF p_state_cd IS NOT NULL AND array_length(p_state_cd, 1) = 0 THEN
-        p_state_cd := NULL;
-    END IF;
+    --IF p_state_cd IS NOT NULL AND array_length(p_state_cd, 1) = 0 THEN
+    --    p_state_cd := NULL;
+    --END IF;
 
     IF p_territory_ids IS NOT NULL AND array_length(p_territory_ids, 1) = 0 THEN
         p_territory_ids := NULL;
     END IF;
 
     -- Fetch agent-level lead counts using state_cd
-    agent_counts := public.get_lead_counts_nds_2_test_shiva(p_agent_id, start_date, end_date, p_state_cd, p_lead_type, p_territory_ids);
+    agent_counts := public.get_lead_counts_nds_2(p_agent_id, start_date, end_date, p_state_cd, p_lead_type, p_territory_ids);
 
 
     -- Handle null values for total_lead_count
@@ -58,7 +64,7 @@ BEGIN
 	    JOIN "mapping"."Territory" t ON z.name = t.zip_cd
 	    WHERE t.expiration_date >= CURRENT_DATE
 	      AND t.isactive IS NOT FALSE
-	      AND (p_territory_ids IS NULL OR t.territory_id = ANY(p_territory_ids))
+	      AND (p_territory_ids IS NULL OR p_territory_ids = '{}' OR t.territory_id = ANY(p_territory_ids))
 	),
 	
 	CombinedFilters AS (
@@ -103,7 +109,9 @@ BEGIN
             LATERAL jsonb_array_elements(t.geojson::jsonb) WITH ORDINALITY AS elem(elem, ordinality)
         WHERE
             t.expiration_date >= CURRENT_DATE
-            AND t.isactive IS NOT FALSE --AND (p_territory_ids IS NULL OR t.territory_id = ANY(p_territory_ids))
+            AND t.isactive IS NOT FALSE 
+            AND (p_territory_ids IS NULL OR p_territory_ids = '{}'
+                 OR t.territory_id = ANY(p_territory_ids))
     ),
     territory_geometries AS (
         SELECT
@@ -124,90 +132,75 @@ BEGIN
         GROUP BY
             territory_id
     ),
-    latest_dispositions AS (
+     latest_dispositions AS (
         SELECT
-            ad.txt_audience_id,
+            ad.txt_audience_id, ad.txt_agent_id,
+            ad.txt_lead_disposition,
             ad.last_modified_date,
-            ad.txt_lead_disposition,
             ROW_NUMBER() OVER (
                 PARTITION BY ad.txt_audience_id
-                ORDER BY ad.last_modified_date DESC
+                ORDER BY ad.last_modified_date DESC NULLS LAST
             ) AS rn
         FROM pgadmin."AgentDisposition" ad
-        WHERE ad.last_modified_date IS NOT NULL
-        UNION ALL
-        SELECT
-            ad.txt_audience_id,
-            NULL AS last_modified_date,
-            ad.txt_lead_disposition,
-            ROW_NUMBER() OVER (
-                PARTITION BY ad.txt_audience_id
-                ORDER BY ad.last_modified_date DESC
-            ) AS rn
-        FROM pgadmin."AgentDisposition" ad
-        WHERE ad.last_modified_date IS NULL
+        WHERE --ad.last_modified_date is not null and 
+        ad.txt_lead_disposition is not null 
+          --and cast(ad.last_modified_date as date) BETWEEN start_date AND end_date 
     ),
     DispositionCounts AS (
         SELECT
-            COUNT(DISTINCT tm.agent_id) AS total_agents,
-            COUNT(DISTINCT t.territory_id) AS total_territories,
-            COUNT(DISTINCT (p.audience_id, tm.agent_id)) AS my_lead_count,
-            COUNT(CASE WHEN ad.txt_lead_disposition IN ('Internet Only Sale', 'Wireless Only Sale', 'Wireless and Internet Sale') THEN 1 END) AS sales_conversion_count,
-            COUNT(CASE WHEN ad.txt_lead_disposition IN ('Decision Maker Not Home', 'No Answer') THEN 1 END) AS comeback_count,
-            COUNT(CASE WHEN ad.txt_lead_disposition IN ('Follow up Appointment') THEN 1 END) AS to_be_visited_count,
-            COUNT(CASE WHEN ad.txt_lead_disposition IN (
-                'Decision Maker Not Home - Final', 'No Answer - Final', 'Competitor Loyalty', 'Discount Requested', 'Employee/Retiree',
-                'Existing Customer', 'Health Concern', 'Installation Timing', 'Language Barrier - Spanish', 'Language Barrier - Other',
-                'Moving', 'Not Interested', 'Not Qualified', 'Plan Limitations', 'Price Sensitivity', 'Under Contract',
-                'ACC Bulk', 'Apartment/Condo', 'Business', 'Data Discrepancy', 'Deceased', 'Disaster', 'Do Not Knock Request',
-                'Gated', 'Marina', 'Military Base', 'New Build', 'No Access', 'Restricted Area', 'Safety', 'Seasonal',
+        COUNT(DISTINCT tm.agent_id) AS total_agents,
+        COUNT(DISTINCT t.territory_id) AS total_territories,
+        COUNT(DISTINCT (p.audience_id, tm.agent_id)) AS my_lead_count, -- Include agent_id for shared leads
+ 
+        COUNT( CASE  
+            WHEN ad.txt_lead_disposition IN ('Internet Only Sale', 'Wireless Only Sale', 'Wireless and Internet Sale') 
+                 AND (ad.last_modified_date IS NULL OR DATE(ad.last_modified_date) BETWEEN start_date AND end_date) 
+                 AND tm.agent_id = ad.txt_agent_id
+            THEN (p.audience_id, tm.agent_id) END) AS sales_conversion_count,
+
+        -- Comeback count
+        COUNT( DISTINCT CASE  
+            WHEN ad.txt_lead_disposition IN ('Decision Maker Not Home', 'No Answer') 
+                 AND (ad.last_modified_date IS NULL OR DATE(ad.last_modified_date) BETWEEN start_date AND end_date) 
+                 AND tm.agent_id = ad.txt_agent_id
+            THEN (p.audience_id, tm.agent_id) END) AS comeback_count,
+
+        -- Follow-up appointment count
+        COUNT( DISTINCT CASE  
+            WHEN ad.txt_lead_disposition IN ('Follow up Appointment') 
+                 AND (ad.last_modified_date IS NULL OR DATE(ad.last_modified_date) BETWEEN start_date AND end_date) 
+                 AND tm.agent_id = ad.txt_agent_id
+            THEN (p.audience_id, tm.agent_id) END) AS to_be_visited_count,
+
+        -- Do not knock count
+        COUNT( DISTINCT CASE  
+            WHEN ad.txt_lead_disposition IN (
+                'Decision Maker Not Home - Final', 'No Answer - Final', 'Competitor Loyalty', 
+                'Discount Requested', 'Employee/Retiree', 'Existing Customer', 'Health Concern', 
+                'Installation Timing', 'Language Barrier - Spanish', 'Language Barrier - Other', 
+                'Moving', 'Not Interested', 'Not Qualified', 'Plan Limitations', 'Price Sensitivity', 
+                'Under Contract', 'ACC Bulk', 'Apartment/Condo', 'Business', 'Data Discrepancy', 
+                'Deceased', 'Disaster', 'Do Not Knock Request', 'Gated', 'Marina', 'Military Base', 
+                'New Build', 'No Access', 'Restricted Area', 'Safety', 'Seasonal', 
                 'Senior Living/Convalescent Center', 'Student Housing/Dorm''s', 'Vacant- Lot'
-            ) THEN 1 END) AS do_not_knock_count
-        FROM
+            ) 
+                 AND (ad.last_modified_date IS NULL OR DATE(ad.last_modified_date) BETWEEN start_date AND end_date) 
+                 AND tm.agent_id = ad.txt_agent_id
+            THEN (p.audience_id, tm.agent_id) END) AS do_not_knock_count
+
+FROM
             pgadmin."Prospect_partition" p
         LEFT JOIN latest_dispositions ad ON p.audience_id = ad.txt_audience_id AND ad.rn = 1
-        JOIN "mapping"."Territory" t ON p.zip_cd = t.zip_cd --AND (p_state_cd IS NULL OR p_state_cd =  '{}' OR p.state_cd = ANY(p_state_cd))  
-        JOIN "mapping"."Teams" tm ON tm.territory_id = t.territory_id
+        JOIN "mapping"."Territory" t ON p.zip_cd = t.zip_cd --and (p_state_cd IS NULL OR p_state_cd =  '{}' OR p.state_cd = ANY(p_state_cd))
+        JOIN "mapping"."Teams" tm ON tm.territory_id = t.territory_id --and tm.agent_id = ad.txt_agent_id
         JOIN territory_geometries tg ON tg.territory_id = t.territory_id
-        WHERE tm.agent_id IN (
-            SELECT agent_id
-            FROM "mapping"."Teams"
-            WHERE dealer_id IN (
-                SELECT dealer_id
-                FROM "mapping"."Teams"
-                WHERE agent_id = p_agent_id
-            )
-        )
-        AND (p_territory_ids IS NULL OR p_territory_ids = '{}'
-               OR t.territory_id = ANY(p_territory_ids))
-        and t.expiration_date >= current_date
-        and ST_Contains(
+        JOIN CombinedFilters cf ON (cf.combined_filter)::text LIKE '%' || quote_literal(t.zip_cd) || '%'
+        WHERE ad.txt_lead_disposition is not null AND  
+         ST_Contains(
                     tg.geom,
                     ST_SetSRID(ST_MakePoint(p.uv_variable_5::NUMERIC, p.uv_variable_4::NUMERIC), 4326)
-                )
-        and t.isactive is not false  
-        AND t.territory_id IN (
-            SELECT territory_id
-            FROM "mapping"."Territory"
-            WHERE territory_id IN (
-                SELECT t2.territory_id
-                FROM TerritoryInfo t2
-                JOIN territory_geometries tg ON tg.territory_id = t2.territory_id
-                WHERE ST_Contains(
-                    tg.geom,
-                    ST_SetSRID(ST_MakePoint(p.uv_variable_5::NUMERIC, p.uv_variable_4::NUMERIC), 4326)
-                )
-            )
-        )
-        AND CAST(ad.last_modified_date AS date) BETWEEN start_date AND end_date
-        AND EXISTS (
-            SELECT 1 
-            FROM CombinedFilters cf 
-            WHERE cf.combined_filter IS NOT NULL 
-              -- Check if combined filter applies to zip codes dynamically.
-              AND (cf.combined_filter)::text LIKE '%' || quote_literal(t.zip_cd) || '%'
-        )
-    AND (
+                ) and t.expiration_date >= current_date and t.isactive is not false 
+     AND (
         CASE 
             WHEN (
                 ((unit_designator_cd IS NOT NULL AND unit_designator_cd != '') OR (unit_nbr IS NOT NULL AND unit_nbr != ''))
@@ -227,8 +220,38 @@ BEGIN
                 END
         END = p_lead_type -- Compare against the parameter
         OR p_lead_type = 'all'
+)
       
-    )
+      --AND EXISTS (
+          --  SELECT 1 
+           -- FROM CombinedFilters cf 
+            --WHERE cf.combined_filter IS NOT NULL 
+               --Check if combined filter applies to zip codes dynamically.
+             -- AND (cf.combined_filter)::text LIKE '%' || quote_literal(t.zip_cd) || '%'
+        --)
+        and tm.agent_id IN (
+            SELECT agent_id
+            FROM "mapping"."Teams"
+            WHERE dealer_id IN (
+                SELECT dealer_id
+                FROM "mapping"."Teams"
+                WHERE agent_id = p_agent_id
+            )
+        )
+        AND (p_territory_ids IS NULL OR p_territory_ids = '{}'
+               OR t.territory_id = ANY(p_territory_ids))
+        --and t.expiration_date >= current_date
+        --and t.isactive is not false 
+        AND t.territory_id IN (
+            SELECT territory_id
+            FROM "mapping"."Territory"
+            WHERE territory_id IN (
+                SELECT t2.territory_id
+                FROM TerritoryInfo t2
+                JOIN territory_geometries tg ON tg.territory_id = t2.territory_id
+            )
+        )
+    
 )
     -- Fetch the aggregated results
     SELECT 
