@@ -1,5 +1,3 @@
--- get_icon_color_json
-
 -- DROP FUNCTION public.get_icon_color_json(json);
 
 CREATE OR REPLACE FUNCTION public.get_icon_color_json(p_input_json json)
