@@ -27,20 +27,16 @@ DECLARE
 BEGIN
     
     IF start_date IS NULL THEN
-        start_date := '1900-01-01'; -- Use an arbitrarily early date
+        start_date := '1900-01-01'; 
     END IF;
 
     IF end_date IS NULL THEN
-        end_date := '9999-12-31'; -- Use an arbitrarily late date
+        end_date := '9999-12-31';
     END IF;
 
     IF p_lead_type IS NOT NULL THEN
         p_lead_type := lower(p_lead_type::TEXT);
     END IF;
-
-    --IF p_state_cd IS NOT NULL AND array_length(p_state_cd, 1) = 0 THEN
-    --    p_state_cd := NULL;
-    --END IF;
 
     IF p_territory_ids IS NOT NULL AND array_length(p_territory_ids, 1) = 0 THEN
         p_territory_ids := NULL;
@@ -49,12 +45,10 @@ BEGIN
     -- Fetch agent-level lead counts using state_cd
     agent_counts := public.get_lead_counts_nds_2(p_agent_id, start_date, end_date, p_state_cd, p_lead_type, p_territory_ids);
 
-
     -- Handle null values for total_lead_count
     IF agent_counts->>'total_lead_count' IS NULL THEN
         agent_counts := agent_counts || jsonb_build_object('total_lead_count', 0);
     END IF;
-
 
     WITH DecodedFilters AS (
 	    SELECT 
@@ -132,7 +126,7 @@ BEGIN
         GROUP BY
             territory_id
     ),
-     latest_dispositions AS (
+    latest_dispositions AS (
         SELECT
             ad.txt_audience_id, ad.txt_agent_id,
             ad.txt_lead_disposition,
@@ -142,9 +136,25 @@ BEGIN
                 ORDER BY ad.last_modified_date DESC NULLS LAST
             ) AS rn
         FROM pgadmin."AgentDisposition" ad
-        WHERE --ad.last_modified_date is not null and 
-        ad.txt_lead_disposition is not null 
-          --and cast(ad.last_modified_date as date) BETWEEN start_date AND end_date 
+        WHERE ad.txt_lead_disposition is not null 
+    ),
+    -- New CTE to fetch state_cd from the relevant table
+    TerritoryStates AS (
+        SELECT DISTINCT p.state_cd
+        FROM mapping."Territory" t
+        join pgadmin."Prospect_partition" p on t.zip_cd = p.zip_cd
+        JOIN "mapping"."Teams" tm ON tm.territory_id = t.territory_id
+        WHERE tm.agent_id in (SELECT agent_id
+            FROM "mapping"."Teams"
+            WHERE dealer_id IN (
+                SELECT dealer_id
+                FROM "mapping"."Teams"
+                WHERE agent_id = p_agent_id
+            ))
+         and expiration_date >= CURRENT_DATE
+          AND isactive IS NOT FALSE
+          AND (p_territory_ids IS NULL OR p_territory_ids = '{}'
+                 OR t.territory_id = ANY(p_territory_ids))
     ),
     DispositionCounts AS (
         SELECT
@@ -191,11 +201,13 @@ BEGIN
 FROM
             pgadmin."Prospect_partition" p
         LEFT JOIN latest_dispositions ad ON p.audience_id = ad.txt_audience_id AND ad.rn = 1
-        JOIN "mapping"."Territory" t ON p.zip_cd = t.zip_cd --and (p_state_cd IS NULL OR p_state_cd =  '{}' OR p.state_cd = ANY(p_state_cd))
-        JOIN "mapping"."Teams" tm ON tm.territory_id = t.territory_id --and tm.agent_id = ad.txt_agent_id
+        JOIN "mapping"."Territory" t ON p.zip_cd = t.zip_cd
+        JOIN "mapping"."Teams" tm ON tm.territory_id = t.territory_id
         JOIN territory_geometries tg ON tg.territory_id = t.territory_id
         JOIN CombinedFilters cf ON (cf.combined_filter)::text LIKE '%' || quote_literal(t.zip_cd) || '%'
-        WHERE ad.txt_lead_disposition is not null AND  
+        -- Join with TerritoryStates to filter by state_cd
+        JOIN TerritoryStates ts ON p.state_cd = ts.state_cd
+        WHERE ad.txt_lead_disposition is not null AND 
          ST_Contains(
                     tg.geom,
                     ST_SetSRID(ST_MakePoint(p.uv_variable_5::NUMERIC, p.uv_variable_4::NUMERIC), 4326)
@@ -221,14 +233,6 @@ FROM
         END = p_lead_type -- Compare against the parameter
         OR p_lead_type = 'all'
 )
-      
-      --AND EXISTS (
-          --  SELECT 1 
-           -- FROM CombinedFilters cf 
-            --WHERE cf.combined_filter IS NOT NULL 
-               --Check if combined filter applies to zip codes dynamically.
-             -- AND (cf.combined_filter)::text LIKE '%' || quote_literal(t.zip_cd) || '%'
-        --)
         and tm.agent_id IN (
             SELECT agent_id
             FROM "mapping"."Teams"
@@ -240,8 +244,6 @@ FROM
         )
         AND (p_territory_ids IS NULL OR p_territory_ids = '{}'
                OR t.territory_id = ANY(p_territory_ids))
-        --and t.expiration_date >= current_date
-        --and t.isactive is not false 
         AND t.territory_id IN (
             SELECT territory_id
             FROM "mapping"."Territory"
@@ -253,7 +255,7 @@ FROM
         )
     
 )
-    -- Fetch the aggregated results
+    --- Agrregate the results
     SELECT 
         total_agents,
         total_territories,
