@@ -22,3 +22,61 @@ p.audience_id = ANY(aloc_arr);
 END;
 $function$
 ;
+
+
+-- Find functions explicitly used in the database
+-- Find functions used in triggers and their definitions
+SELECT 
+    p.proname AS function_name,
+    p.proargtypes AS argument_types,
+    t.tgname AS trigger_name,
+    t.tgtype AS trigger_type,*
+FROM 
+    pg_proc p
+JOIN 
+    pg_trigger t ON t.tgfoid = p.oid  -- join functions to triggers by tgfoid
+JOIN 
+    pg_class c ON c.oid = t.tgrelid  -- join triggers to the tables they are associated with
+WHERE 
+    t.tgisinternal = false  -- only consider user-defined triggers, not system ones
+ORDER BY 
+    function_name, trigger_name;
+
+-- Find functions called explicitly and via triggers
+-- Find functions called explicitly and via triggers
+WITH function_usage AS (
+    -- Find functions called in triggers
+    SELECT 
+        p.proname AS function_name,
+        p.proargtypes AS argument_types,
+        t.tgname AS trigger_name,
+        'trigger' AS usage_type
+    FROM 
+        pg_proc p
+    JOIN 
+        pg_trigger t ON t.tgfoid = p.oid  -- join functions to triggers by tgfoid
+    WHERE 
+        t.tgisinternal = false  -- only consider user-defined triggers, not system ones
+
+    UNION ALL
+
+    -- Find functions used in views (or other database objects)
+    SELECT 
+        p.proname AS function_name,
+        p.proargtypes AS argument_types,
+        v.viewname AS object_name,
+        'view' AS usage_type
+    FROM 
+        pg_proc p
+    JOIN 
+        pg_depend d ON p.oid = d.objid  -- join function dependencies to other objects
+    JOIN 
+        pg_class c ON c.oid = d.refobjid  -- this connects function usage to views, tables, etc.
+    JOIN 
+        pg_views v ON v.oid = c.oid  -- filtering for views
+    WHERE 
+        c.relkind = 'v'  -- ensure it's a view
+)
+SELECT * 
+FROM function_usage
+ORDER BY function_name, object_name;
