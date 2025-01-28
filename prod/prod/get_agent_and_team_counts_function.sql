@@ -27,11 +27,11 @@ DECLARE
 BEGIN
     
     IF start_date IS NULL THEN
-        start_date := '1900-01-01'; -- Use an arbitrarily early date
+        start_date := '1900-01-01'; 
     END IF;
 
     IF end_date IS NULL THEN
-        end_date := '9999-12-31'; -- Use an arbitrarily late date
+        end_date := '9999-12-31';
     END IF;
 
     IF p_lead_type IS NOT NULL THEN
@@ -255,7 +255,7 @@ FROM
         )
     
 )
-    -- Fetch the aggregated results
+    
     SELECT 
         total_agents,
         total_territories,
