@@ -1,0 +1,19 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://github.com/Shivendu2311-sql/Prod-postgresql.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "prod"]
+	remote = origin
+	merge = refs/heads/prod
+[remote "staging"]
+	url = https://github.com/Shivendu2311-sql/Staging-postgresql.git
+	fetch = +refs/heads/*:refs/remotes/staging/*
+[branch "staging"]
+	remote = staging
+	merge = refs/heads/staging
