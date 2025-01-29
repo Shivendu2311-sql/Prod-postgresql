@@ -255,7 +255,8 @@ FROM
         )
     
 )
-    --- Agrregate the results
+    --- Agrregate the results here
+    
     SELECT 
         total_agents,
         total_territories,
