@@ -134,7 +134,7 @@ BEGIN
     WHERE 
        --AND (d.dealer_type IN ('Manager Dealer', 'Regional Dealer') 
         d.sfid != p_sfid
-        AND CAST(ad.last_modified_date AS date) BETWEEN p_start_date AND p_end_date
+    AND CAST(ad.last_modified_date AS date) BETWEEN p_start_date AND p_end_date
     GROUP BY d.sfid, d.name, d.external_zip_code__c;
     RAISE NOTICE 'Step 3 complete: agent metrics aggregated in % seconds', EXTRACT(EPOCH FROM clock_timestamp() - step_time);
 
