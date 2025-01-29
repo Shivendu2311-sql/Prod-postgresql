@@ -132,7 +132,8 @@ BEGIN
     JOIN pgadmin."Prospect" p ON p.zip_cd = t.zip_cd
     LEFT JOIN pgadmin."AgentDisposition" ad ON p.audience_id = ad.txt_audience_id
     WHERE CAST(ad.last_modified_date AS date) BETWEEN p_start_date AND p_end_date
-       AND (d.dealer_type IN ('Manager Dealer', 'Regional Dealer') AND d.sfid != p_sfid)
+       --AND (d.dealer_type IN ('Manager Dealer', 'Regional Dealer') 
+       AND d.sfid != p_sfid)
     GROUP BY d.sfid, d.name, d.external_zip_code__c;
     RAISE NOTICE 'Step 3 complete: agent metrics aggregated in % seconds', EXTRACT(EPOCH FROM clock_timestamp() - step_time);
 
